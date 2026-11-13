@@ -425,6 +425,9 @@ where
             for (k, v) in span_fields.into_iter().chain(event_fields) {
                 if !is_reserved_key(&k) {
                     match v {
+                        Value::String(s) if s.chars().any(char::is_control) => {
+                            write!(writer, " {k}={s:?}")?
+                        }
                         Value::String(s) => write!(writer, " {k}={s}")?,
                         other => write!(writer, " {k}={other}")?,
                     }
@@ -550,7 +553,30 @@ mod tests {
         assert!(resolve_json_format_from(None, true));
         assert!(!resolve_json_format_from(None, false));
 
-        // RUST_LOG wins over LOG_FILTER; LOG_FILTER is used when RUST_LOG is unset; default is info.
+        // 1. RUST_LOG wins over LOG_FILTER when both are set.
+        let precedence_buf = BufferWriter::default();
+        let precedence_filter = build_env_filter_from(Some("warn"), Some("debug"));
+        let precedence_sub = build_subscriber_with_filter(
+            "matcher",
+            precedence_buf.clone(),
+            false,
+            precedence_filter,
+        );
+        tracing::subscriber::with_default(precedence_sub, || {
+            tracing::info!("info filtered out because RUST_LOG=warn beats LOG_FILTER=debug");
+            tracing::warn!("warn visible via RUST_LOG");
+        });
+        let precedence_text = precedence_buf.take_string();
+        assert!(
+            !precedence_text.contains("info filtered out"),
+            "expected RUST_LOG=warn to override LOG_FILTER=debug, got: {precedence_text}"
+        );
+        assert!(
+            precedence_text.contains("warn visible via RUST_LOG"),
+            "got: {precedence_text}"
+        );
+
+        // 2. LOG_FILTER is used when RUST_LOG is unset.
         let buf = BufferWriter::default();
         let filter = build_env_filter_from(None, Some("debug"));
         let sub = build_subscriber_with_filter("matcher", buf.clone(), false, filter);
@@ -564,6 +590,7 @@ mod tests {
         assert!(text.contains("debug visible via LOG_FILTER"), "got: {text}");
         assert!(!text.contains("trace hidden"), "got: {text}");
 
+        // 3. Default is info when both are unset.
         let buf2 = BufferWriter::default();
         let default_filter = build_env_filter_from(None, None);
         let sub2 = build_subscriber_with_filter("matcher", buf2.clone(), true, default_filter);
@@ -579,27 +606,89 @@ mod tests {
     #[test]
     fn redacts_dangerous_fields_in_logs_and_helpers() {
         for dangerous in [
+            // Snake_case and kebab-case forms
             "password",
             "user_password",
+            "user_pass",
+            "passphrase",
             "token",
             "access_token",
+            "refresh_token",
             "secret",
             "client_secret",
+            "api_key",
+            "x-api-key",
+            "X-Api-Key",
+            "private_key",
+            "signing_key",
+            "access_key",
+            "aws_access_key_id",
+            "secret_key",
+            "credential",
+            "credentials",
+            "session",
+            "session_id",
+            "signature",
+            "x-line-signature",
+            "hmac",
             "authorization",
+            "Authorization",
             "cookie",
+            "set_cookie",
             "set-cookie",
             "otp",
+            "otp_code",
+            "pin",
+            "pin_code",
             "slip",
             "slip_image",
             "ocr",
             "ocr_text",
             "phone",
+            "phone_number",
             "email",
+            "email_address",
+            "user_email",
+            "first_name",
+            "last_name",
+            "full_name",
             "national_id",
             "citizen_id",
+            "tax_id",
+            "birth_date",
+            "date_of_birth",
             "bank_account",
             "account_number",
+            "card_number",
             "promptpay",
+            // camelCase forms (JSON / Dart clients)
+            "accessToken",
+            "apiKey",
+            "clientSecret",
+            "refreshToken",
+            "setCookie",
+            "ocrText",
+            "slipImage",
+            "otpCode",
+            "phoneNumber",
+            "firstName",
+            "lastName",
+            "fullName",
+            "bankAccount",
+            "accountNumber",
+            "cardNumber",
+            "privateKey",
+            "signingKey",
+            "nationalId",
+            "citizenId",
+            "birthDate",
+            "taxId",
+            "emailAddress",
+            "userEmail",
+            "pinCode",
+            "userPass",
+            "dateOfBirth",
+            "sessionId",
         ] {
             assert!(
                 is_sensitive_field(dangerous),
@@ -617,6 +706,7 @@ mod tests {
             "target",
             "message",
             "order_id",
+            "footprint",
         ] {
             assert!(
                 !is_sensitive_field(safe),
@@ -635,52 +725,182 @@ mod tests {
         let mut payload = serde_json::json!({
             "user_id": "u-108",
             "password": "plain-password",
+            "phoneNumber": "0812345678",
+            "sessionId": "sess-xyz",
             "nested": {
                 "slip_image": "base64...",
                 "ocr_text": "นาย ก 500.00",
+                "accountNumber": "123-4-56789-0",
                 "status": "ok"
             }
         });
         redact_json(&mut payload);
         assert_eq!(payload["user_id"], "u-108");
         assert_eq!(payload["password"], REDACTED);
+        assert_eq!(payload["phoneNumber"], REDACTED);
+        assert_eq!(payload["sessionId"], REDACTED);
         assert_eq!(payload["nested"]["slip_image"], REDACTED);
         assert_eq!(payload["nested"]["ocr_text"], REDACTED);
+        assert_eq!(payload["nested"]["accountNumber"], REDACTED);
         assert_eq!(payload["nested"]["status"], "ok");
 
-        // Verify subscriber automatically masks sensitive fields in spans and events
+        // Verify subscriber automatically masks sensitive fields in spans and events (both snake_case and camelCase)
         let buf = BufferWriter::default();
         let sub =
             build_subscriber_with_filter("bank-bot", buf.clone(), true, EnvFilter::new("info"));
         tracing::subscriber::with_default(sub, || {
-            let span = tracing::info_span!("auth", authorization = "Bearer eyJhbGciOi...");
+            let span = tracing::info_span!(
+                "auth",
+                authorization = "Bearer eyJhbGciOi...",
+                sessionId = "sess_secret_1",
+                phoneNumber = "0899999999",
+            );
             let _enter = span.enter();
             tracing::info!(
                 password = "super-secret-password",
+                passphrase = "correct-horse-battery-staple",
                 token = "tok_live_123",
+                accessToken = "at_live_456",
+                apiKey = "ak_live_789",
+                clientSecret = "cs_live_000",
+                refreshToken = "rt_live_111",
+                setCookie = "sid=secret",
+                credential = "cred_val",
+                credentials = "creds_val",
+                session_id = "sid_val",
+                signature = "sig_val",
+                hmac = "hmac_val",
+                access_key = "AKIA_TEST",
+                aws_access_key_id = "AKIA_AWS",
+                secret_key = "sk_test",
+                privateKey = "pk_val",
+                signingKey = " sign_val",
                 slip = "raw-slip-bytes",
+                slipImage = "raw-slip-image",
                 ocr = "raw-ocr-text",
+                ocrText = "raw-ocr-camel",
                 otp = "123456",
+                otpCode = "654321",
+                firstName = "Somchai",
+                lastName = "Jaidee",
+                fullName = "Somchai Jaidee",
+                bankAccount = "111222333",
+                accountNumber = "444555666",
+                cardNumber = "4111222233334444",
+                nationalId = "1100000000001",
+                citizenId = "1100000000002",
+                birthDate = "1990-01-01",
+                dateOfBirth = "1990-01-02",
+                taxId = "0105550000001",
+                emailAddress = "a@b.com",
+                userEmail = "c@d.com",
+                pinCode = "9999",
+                userPass = "hunter2",
                 user_id = "u_99",
                 "processed transfer"
             );
         });
 
         let line = buf.take_string();
-        assert!(!line.contains("Bearer eyJhbGciOi"));
-        assert!(!line.contains("super-secret-password"));
-        assert!(!line.contains("tok_live_123"));
-        assert!(!line.contains("raw-slip-bytes"));
-        assert!(!line.contains("raw-ocr-text"));
-        assert!(!line.contains("123456"));
+        for leaked in [
+            "Bearer eyJhbGciOi",
+            "sess_secret_1",
+            "0899999999",
+            "super-secret-password",
+            "correct-horse-battery-staple",
+            "tok_live_123",
+            "at_live_456",
+            "ak_live_789",
+            "cs_live_000",
+            "rt_live_111",
+            "sid=secret",
+            "cred_val",
+            "creds_val",
+            "sid_val",
+            "sig_val",
+            "hmac_val",
+            "AKIA_TEST",
+            "AKIA_AWS",
+            "sk_test",
+            "pk_val",
+            "sign_val",
+            "raw-slip-bytes",
+            "raw-slip-image",
+            "raw-ocr-text",
+            "raw-ocr-camel",
+            "123456",
+            "654321",
+            "Somchai",
+            "Jaidee",
+            "111222333",
+            "444555666",
+            "4111222233334444",
+            "1100000000001",
+            "1100000000002",
+            "1990-01-01",
+            "1990-01-02",
+            "0105550000001",
+            "a@b.com",
+            "c@d.com",
+            "9999",
+            "hunter2",
+        ] {
+            assert!(
+                !line.contains(leaked),
+                "expected secret value {leaked:?} not to appear in log line: {line}"
+            );
+        }
 
         let parsed: Value = serde_json::from_str(line.trim()).expect("valid JSON");
-        assert_eq!(parsed["authorization"], REDACTED);
-        assert_eq!(parsed["password"], REDACTED);
-        assert_eq!(parsed["token"], REDACTED);
-        assert_eq!(parsed["slip"], REDACTED);
-        assert_eq!(parsed["ocr"], REDACTED);
-        assert_eq!(parsed["otp"], REDACTED);
+        for masked_key in [
+            "authorization",
+            "sessionId",
+            "phoneNumber",
+            "password",
+            "passphrase",
+            "token",
+            "accessToken",
+            "apiKey",
+            "clientSecret",
+            "refreshToken",
+            "setCookie",
+            "credential",
+            "credentials",
+            "session_id",
+            "signature",
+            "hmac",
+            "access_key",
+            "aws_access_key_id",
+            "secret_key",
+            "privateKey",
+            "signingKey",
+            "slip",
+            "slipImage",
+            "ocr",
+            "ocrText",
+            "otp",
+            "otpCode",
+            "firstName",
+            "lastName",
+            "fullName",
+            "bankAccount",
+            "accountNumber",
+            "cardNumber",
+            "nationalId",
+            "citizenId",
+            "birthDate",
+            "dateOfBirth",
+            "taxId",
+            "emailAddress",
+            "userEmail",
+            "pinCode",
+            "userPass",
+        ] {
+            assert_eq!(
+                parsed[masked_key], REDACTED,
+                "expected {masked_key} to be [REDACTED]"
+            );
+        }
         assert_eq!(parsed["user_id"], "u_99");
     }
 
@@ -701,6 +921,7 @@ mod tests {
                 "/ping",
                 get(|Extension(req_id): Extension<RequestId>| async move {
                     tracing::info!("inside ping handler");
+                    tracing::warn!("warn inside ping handler");
                     (StatusCode::OK, req_id.0)
                 }),
             )
@@ -741,11 +962,46 @@ mod tests {
         assert_eq!(log_json["request_id"], supplied);
         assert_eq!(log_json["message"], "inside ping handler");
 
-        // 2. Missing or invalid x-request-id (spaces, >128 chars, empty) generates a UUID
+        // 2. Under RUST_LOG=warn, warn/error lines inside a request still carry request_id
+        let warn_buf = BufferWriter::default();
+        let warn_sub = build_subscriber_with_filter(
+            "test-api",
+            warn_buf.clone(),
+            true,
+            EnvFilter::new("warn"),
+        );
+        let _warn_guard = tracing::subscriber::set_default(warn_sub);
+
+        let warn_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/ping")
+                    .header(REQUEST_ID_HEADER, "rid-warn-1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(warn_res.status(), StatusCode::OK);
+        let warn_output = warn_buf.take_string();
+        let warn_lines: Vec<&str> = warn_output.lines().collect();
+        assert_eq!(
+            warn_lines.len(),
+            1,
+            "expected only warn line under EnvFilter::new(\"warn\"), got: {warn_output}"
+        );
+        let warn_json: Value = serde_json::from_str(warn_lines[0]).unwrap();
+        assert_eq!(warn_json["level"], "warn");
+        assert_eq!(warn_json["request_id"], "rid-warn-1");
+        assert_eq!(warn_json["message"], "warn inside ping handler");
+
+        // 3. Missing or invalid x-request-id (spaces, non-graphic tab "a\tb", >128 chars, empty) generates a UUID
         for invalid in [
             None,
             Some(""),
             Some("bad id with spaces"),
+            Some("a\tb"),
             Some(&"x".repeat(129)),
         ] {
             let mut builder = Request::builder().uri("/ping");
@@ -773,5 +1029,50 @@ mod tests {
             let resp_body = response.into_body().collect().await.unwrap().to_bytes();
             assert_eq!(&resp_body[..], echoed.as_bytes());
         }
+
+        // 4. `axum::middleware::from_fn(trace_request_with_id)` echoes and attaches request_id to logs
+        let fn_app = Router::new()
+            .route(
+                "/fn",
+                get(|Extension(req_id): Extension<RequestId>| async move {
+                    tracing::warn!("inside from_fn handler");
+                    (StatusCode::OK, req_id.0)
+                }),
+            )
+            .layer(axum::middleware::from_fn(trace_request_with_id));
+
+        let fn_buf = BufferWriter::default();
+        let fn_sub =
+            build_subscriber_with_filter("test-api", fn_buf.clone(), true, EnvFilter::new("warn"));
+        let _fn_guard = tracing::subscriber::set_default(fn_sub);
+
+        let fn_supplied = "req-from-fn-108";
+        let fn_res = fn_app
+            .oneshot(
+                Request::builder()
+                    .uri("/fn")
+                    .header(REQUEST_ID_HEADER, fn_supplied)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(fn_res.status(), StatusCode::OK);
+        assert_eq!(
+            fn_res
+                .headers()
+                .get(REQUEST_ID_HEADER)
+                .and_then(|v| v.to_str().ok()),
+            Some(fn_supplied)
+        );
+        let fn_body = fn_res.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(&fn_body[..], fn_supplied.as_bytes());
+
+        let fn_log_output = fn_buf.take_string();
+        let fn_log_json: Value =
+            serde_json::from_str(fn_log_output.lines().next().expect("logged line")).unwrap();
+        assert_eq!(fn_log_json["request_id"], fn_supplied);
+        assert_eq!(fn_log_json["message"], "inside from_fn handler");
     }
 }

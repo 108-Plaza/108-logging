@@ -42,16 +42,17 @@ log108::init_with(log108::Options {
 ### Environment variables
 
 - `RUST_LOG` or `LOG_FILTER`: filter directives (precedence: `RUST_LOG` -> `LOG_FILTER` -> `info`).
-- `LOG_FORMAT`: `json` or `pretty`. When unset, `log108::init` defaults to `json` when stdout is not a tty and `pretty` on a dev tty.
+- `LOG_FORMAT`: `json` or `pretty`. When unset, `log108::init` defaults to `json` when stdout is not a tty and `pretty` on a dev tty. When set, `LOG_FORMAT` overrides `Options { json }`.
 
 ### Redaction
 
 Do not log tokens, secrets, slip images, OCR text, or personal data.
-- `log108`'s subscriber automatically masks structured span and event fields whose names match [`log108::REDACTED_FIELDS`] / [`log108::is_sensitive_field`] (`password`, `token`, `secret`, `authorization`, `cookie`, `otp`, `slip`, `ocr`, `phone`, `email`, `national_id`, `bank_account`, `promptpay`, etc.) as `"[REDACTED]"`.
-- Explicit helpers:
-  - `log108::redact(value)` / `log108::Redacted(value)` — wrapper whose `Display`, `Debug`, and `Serialize` implementations emit `"[REDACTED]"`.
+- **What is masked automatically:** `log108`'s subscriber automatically masks top-level structured span and event fields by name when the field name matches [`log108::REDACTED_FIELDS`] / [`log108::is_sensitive_field`] (snake_case, kebab-case, or camelCase forms of `password`, `passphrase`, `token`, `secret`, `credential`, `session`, `signature`, `hmac`, `access_key`, `secret_key`, `private_key`, `authorization`, `cookie`, `otp`, `slip`, `ocr`, `phone`, `email`, `national_id`, `bank_account`, `account_number`, `promptpay`, etc.) as `"[REDACTED]"`.
+- **What is not masked automatically:** the subscriber cannot inspect inside field values or formatted text. It does **not** mask the `message` string, format arguments interpolated into `message` (nor `log` crate records bridged as plain messages), or the `Debug`, `Display`, or serialized JSON contents inside a non-sensitive field's value (e.g. `info!(form = ?login_struct)` or `info!(body = %raw_json)`).
+- **What to do instead:** never interpolate secrets or PII into the log message; wrap sensitive values with `log108::redact(...)`, or run `log108::redact_json(&mut payload)` on a JSON value before logging it:
+  - `log108::redact(value)` / `log108::Redacted(value)` — wrapper whose `Display`, `Debug`, and `Serialize` implementations always emit `"[REDACTED]"`.
   - `log108::redact_field(field_name, value)` — returns `"[REDACTED]"` for dangerous field names or `value` unchanged.
-  - `log108::redact_json(&mut serde_json::Value)` — recursively masks dangerous keys in JSON payloads.
+  - `log108::redact_json(&mut serde_json::Value)` — recursively masks dangerous keys (including nested objects and arrays) in JSON payloads.
 
 ### Axum / Tower `x-request-id` middleware
 

@@ -70,7 +70,8 @@ pub async fn trace_request_with_id(mut req: Request, next: Next) -> Response {
     }
     req.extensions_mut().insert(RequestId(request_id.clone()));
 
-    let span = tracing::info_span!(
+    // Open at ERROR so the request span remains enabled even when the filter is `warn` or `error`.
+    let span = tracing::error_span!(
         "http_request",
         request_id = %request_id,
         method = %req.method(),
@@ -146,7 +147,8 @@ where
         }
         req.extensions_mut().insert(RequestId(request_id.clone()));
 
-        let span = tracing::info_span!(
+        // Open at ERROR so the request span remains enabled even when the filter is `warn` or `error`.
+        let span = tracing::error_span!(
             "http_request",
             request_id = %request_id,
             method = %req.method(),

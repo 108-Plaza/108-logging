@@ -27,6 +27,15 @@ pub const REDACTED_FIELDS: &[&str] = &[
     "apikey",
     "private_key",
     "signing_key",
+    "access_key",
+    "secret_key",
+    "credential",
+    "credentials",
+    "session",
+    "session_id",
+    "signature",
+    "passphrase",
+    "hmac",
     "authorization",
     "auth",
     "cookie",
@@ -71,6 +80,7 @@ pub const REDACTED_FIELDS: &[&str] = &[
     "card_number",
     "promptpay",
     "birth_date",
+    "date_of_birth",
     "dob",
 ];
 
@@ -80,15 +90,21 @@ pub const SENSITIVE_FIELDS: &[&str] = REDACTED_FIELDS;
 const SUBSTRING_MARKERS: &[&str] = &[
     "password",
     "passwd",
+    "passphrase",
     "secret",
     "token",
     "api_key",
     "apikey",
     "private_key",
     "signing_key",
+    "access_key",
+    "secret_key",
+    "credential",
+    "session",
+    "signature",
+    "hmac",
     "authorization",
     "cookie",
-    "otp",
     "slip",
     "ocr",
     "national_id",
@@ -100,6 +116,7 @@ const SUBSTRING_MARKERS: &[&str] = &[
     "card_number",
     "promptpay",
     "birth_date",
+    "date_of_birth",
     "full_name",
     "first_name",
     "last_name",
@@ -110,8 +127,8 @@ const SUBSTRING_MARKERS: &[&str] = &[
 ];
 
 const SEGMENT_MARKERS: &[&str] = &[
-    "pass", "pwd", "auth", "jwt", "bearer", "pin", "cvv", "cvc", "ssn", "phone", "mobile", "email",
-    "address", "dob",
+    "pass", "pwd", "auth", "jwt", "bearer", "otp", "pin", "cvv", "cvc", "ssn", "phone", "mobile",
+    "email", "address", "dob",
 ];
 
 /// Returns `true` if `field_name` matches a known dangerous field name (tokens, secrets,
@@ -122,13 +139,25 @@ pub fn is_sensitive_field(field_name: &str) -> bool {
         return false;
     }
 
-    let normalized: String = trimmed
-        .chars()
-        .map(|c| match c {
-            '-' | '.' | '/' | ' ' => '_',
-            _ => c.to_ascii_lowercase(),
-        })
-        .collect();
+    let chars: Vec<char> = trimmed.chars().collect();
+    let mut normalized = String::with_capacity(trimmed.len() + 4);
+    for (i, &c) in chars.iter().enumerate() {
+        if matches!(c, '-' | '.' | '/' | ' ') {
+            normalized.push('_');
+        } else {
+            if i > 0 && c.is_ascii_uppercase() {
+                let prev = chars[i - 1];
+                let next_is_lower = chars.get(i + 1).is_some_and(|n| n.is_ascii_lowercase());
+                if prev.is_ascii_lowercase()
+                    || prev.is_ascii_digit()
+                    || (prev.is_ascii_uppercase() && next_is_lower)
+                {
+                    normalized.push('_');
+                }
+            }
+            normalized.push(c.to_ascii_lowercase());
+        }
+    }
 
     if REDACTED_FIELDS
         .iter()
