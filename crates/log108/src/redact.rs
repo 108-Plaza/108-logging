@@ -33,6 +33,7 @@ pub const REDACTED_FIELDS: &[&str] = &[
     "credentials",
     "session",
     "session_id",
+    "session_key",
     "signature",
     "passphrase",
     "hmac",
@@ -45,6 +46,8 @@ pub const REDACTED_FIELDS: &[&str] = &[
     "bearer",
     "otp",
     "otp_code",
+    "otpcode",
+    "userotp",
     "pin",
     "cvv",
     "cvc",
@@ -100,7 +103,6 @@ const SUBSTRING_MARKERS: &[&str] = &[
     "access_key",
     "secret_key",
     "credential",
-    "session",
     "signature",
     "hmac",
     "authorization",
@@ -173,7 +175,7 @@ pub fn is_sensitive_field(field_name: &str) -> bool {
     normalized
         .split('_')
         .filter(|seg| !seg.is_empty())
-        .any(|seg| SEGMENT_MARKERS.contains(&seg))
+        .any(|seg| SEGMENT_MARKERS.contains(&seg) || seg.starts_with("otp") || seg.ends_with("otp"))
 }
 
 /// Returns [`REDACTED`] if `field_name` is a known dangerous field name, or `value` unchanged.
