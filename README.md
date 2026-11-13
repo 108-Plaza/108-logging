@@ -21,15 +21,54 @@ Optional fields include `host`, `instance`, hashed or internal `user_id`, `laten
 
 ## Rust crate (`log108`)
 
+### Startup initialization
+
 Call once at startup:
 
 ```rust
 log108::init("service-name");
 ```
 
-Use `init_with` when the process must write to stderr (tq). Filter with `RUST_LOG` or `LOG_FILTER` (default `info`). This repository will also provide feature-gated axum/tower `x-request-id` middleware. Applications must not depend on `pos-infra` just to log.
+Use `init_with` when the process must write to stderr (such as `tq` MCP servers) or customize the output format:
 
-Do not log tokens, secrets, slip images, OCR text, or personal data. Dangerous field names (`password`, `token`, `secret`, `authorization`, `cookie`, `otp`, `slip`, `ocr`, and similar) must be masked as `[REDACTED]`.
+```rust
+log108::init_with(log108::Options {
+    service: "tq",
+    writer: std::io::stderr,
+    json: true,
+});
+```
+
+### Environment variables
+
+- `RUST_LOG` or `LOG_FILTER`: filter directives (precedence: `RUST_LOG` -> `LOG_FILTER` -> `info`).
+- `LOG_FORMAT`: `json` or `pretty`. When unset, `log108::init` defaults to `json` when stdout is not a tty and `pretty` on a dev tty. When set, `LOG_FORMAT` overrides `Options { json }`.
+
+### Redaction
+
+Do not log tokens, secrets, slip images, OCR text, or personal data.
+- **What is masked automatically:** `log108`'s subscriber automatically masks top-level structured span and event fields by name when the field name matches [`log108::REDACTED_FIELDS`] / [`log108::is_sensitive_field`] (snake_case, kebab-case, or camelCase forms of `password`, `passphrase`, `token`, `secret`, `credential`, `session`, `signature`, `hmac`, `access_key`, `secret_key`, `private_key`, `authorization`, `cookie`, `otp`, `slip`, `ocr`, `phone`, `email`, `national_id`, `bank_account`, `account_number`, `promptpay`, etc.) as `"[REDACTED]"`.
+- **What is not masked automatically:** the subscriber cannot inspect inside field values or formatted text. It does **not** mask the `message` string, format arguments interpolated into `message` (nor `log` crate records bridged as plain messages), or the `Debug`, `Display`, or serialized JSON contents inside a non-sensitive field's value (e.g. `info!(form = ?login_struct)` or `info!(body = %raw_json)`).
+- **What to do instead:** never interpolate secrets or PII into the log message; wrap sensitive values with `log108::redact(...)`, or run `log108::redact_json(&mut payload)` on a JSON value before logging it:
+  - `log108::redact(value)` / `log108::Redacted(value)` — wrapper whose `Display`, `Debug`, and `Serialize` implementations always emit `"[REDACTED]"`.
+  - `log108::redact_field(field_name, value)` — returns `"[REDACTED]"` for dangerous field names or `value` unchanged.
+  - `log108::redact_json(&mut serde_json::Value)` — recursively masks dangerous keys (including nested objects and arrays) in JSON payloads.
+
+### Axum / Tower `x-request-id` middleware
+
+Enabled by default via the `axum` / `tower` Cargo features (disable with `default-features = false` for non-HTTP binaries). Applications do not need `pos-infra` to log or propagate request IDs:
+
+```rust
+use axum::{Router, routing::get};
+
+let app = Router::new()
+    .route("/health", get(|| async { "ok" }))
+    .layer(log108::request_id_layer());
+```
+
+Or with `axum::middleware::from_fn(log108::trace_request_with_id)`.
+- If the incoming `x-request-id` header is ASCII graphic (`0x21..=0x7E`) and at most 128 characters, it is preserved; otherwise a new UUID v4 is generated.
+- Stores `log108::RequestId` in request extensions, records `request_id` on the request `tracing` span so every log line inside the request includes `request_id`, and echoes `x-request-id` on the HTTP response.
 
 ## Rules
 

@@ -1,0 +1,31 @@
+[package]
+name = "log108"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Shared structured JSON logging, redaction, and x-request-id middleware for 108-Plaza services"
+
+[features]
+default = ["axum"]
+axum = ["dep:axum", "dep:http", "dep:tower", "dep:uuid"]
+tower = ["axum"]
+
+[dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-log = "0.2"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json", "registry", "tracing-log"] }
+
+axum = { version = "0.8", optional = true, default-features = false }
+http = { version = "1", optional = true }
+tower = { version = "0.5", optional = true, default-features = false }
+uuid = { version = "1", optional = true, features = ["v4"] }
+
+[dev-dependencies]
+axum = { version = "0.8" }
+http-body-util = "0.1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tower = { version = "0.5", features = ["util"] }
+uuid = { version = "1", features = ["v4"] }
