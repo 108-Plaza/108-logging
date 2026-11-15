@@ -17,6 +17,7 @@
 //! ```
 
 pub mod redact;
+pub mod reload;
 
 #[cfg(feature = "axum")]
 pub mod middleware;
@@ -41,6 +42,8 @@ pub use self::redact::{
     is_sensitive_field, redact, redact_field, redact_json, redact_str, Redacted, REDACTED,
     REDACTED_FIELDS, SENSITIVE_FIELDS,
 };
+
+pub use self::reload::{build_reloadable_subscriber, init_reloadable, FilterError, LogHandle};
 
 #[cfg(feature = "axum")]
 pub use self::middleware::{
