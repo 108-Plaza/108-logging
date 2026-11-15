@@ -272,4 +272,27 @@ mod tests {
         assert!(matches!(err, FilterError::Reload(_)), "got {err:?}");
         assert_eq!(handle.filter(), "warn");
     }
+
+    /// Ticket #9 §4: invalid initial directives fall back to `info`, and `filter()` says so.
+    #[test]
+    fn invalid_initial_directives_fall_back_to_info() {
+        let buf = Buf::default();
+        let (dispatch, handle) =
+            build_reloadable_subscriber("test-api", buf.clone(), true, "warn,mqtt=nonsense[");
+        assert_eq!(handle.filter(), "info");
+
+        tracing::dispatcher::with_default(&dispatch, || {
+            tracing::info!(target: "mqtt", probe = "mqtt-info", "mqtt info probe");
+            emit_mqtt_debug();
+        });
+        let out = buf.take();
+        assert!(
+            out.contains("mqtt-info"),
+            "info must be written, got: {out}"
+        );
+        assert!(
+            !out.contains("mqtt-debug"),
+            "debug must stay off, got: {out}"
+        );
+    }
 }
