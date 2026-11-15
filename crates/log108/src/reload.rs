@@ -14,9 +14,10 @@ use std::sync::{Arc, RwLock};
 
 use tracing::Dispatch;
 use tracing_subscriber::fmt::MakeWriter;
+use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::{reload, EnvFilter, Registry};
 
-use crate::Options;
+use crate::{EventFormatter, Options, SpanFieldsLayer};
 
 /// Why [`LogHandle::set_filter`] refused a new filter. The old filter stays in force.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,8 +51,10 @@ impl LogHandle {
     /// The directive string currently in force (what the last successful
     /// [`set_filter`](Self::set_filter), or the initial build, set).
     pub fn filter(&self) -> String {
-        let _ = (&self.inner, &self.current);
-        todo!("LOG-3")
+        self.current
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// Parses `directives` as `EnvFilter` directives and swaps the filter in.
@@ -59,8 +62,12 @@ impl LogHandle {
     /// On `Err` nothing changes: the old filter stays in force and [`filter`](Self::filter)
     /// still returns the old string.
     pub fn set_filter(&self, directives: &str) -> Result<(), FilterError> {
-        let _ = directives;
-        todo!("LOG-3")
+        let next = EnvFilter::try_new(directives).map_err(|e| FilterError::Parse(e.to_string()))?;
+        self.inner
+            .reload(next)
+            .map_err(|e| FilterError::Reload(e.to_string()))?;
+        *self.current.write().unwrap_or_else(|e| e.into_inner()) = directives.to_owned();
+        Ok(())
     }
 }
 
@@ -74,8 +81,24 @@ where
     W: for<'a> MakeWriter<'a> + Send + Sync + 'static,
     S: AsRef<str>,
 {
-    let _ = options;
-    todo!("LOG-3")
+    let env_format = std::env::var("LOG_FORMAT").ok();
+    let json = crate::resolve_json_format_from(env_format.as_deref(), options.json);
+    let directives = [
+        std::env::var("RUST_LOG").ok(),
+        std::env::var("LOG_FILTER").ok(),
+    ]
+    .into_iter()
+    .flatten()
+    .find_map(|s| {
+        let t = s.trim();
+        (!t.is_empty() && EnvFilter::try_new(t).is_ok()).then(|| t.to_owned())
+    })
+    .unwrap_or_else(|| "info".to_owned());
+
+    let (dispatch, handle) =
+        build_reloadable_subscriber(options.service.as_ref(), options.writer, json, &directives);
+    let _ = tracing::dispatcher::set_global_default(dispatch);
+    handle
 }
 
 /// Testable form of [`init_reloadable`]: builds the same subscriber stack as
@@ -90,8 +113,35 @@ pub fn build_reloadable_subscriber<W>(
 where
     W: for<'a> MakeWriter<'a> + Send + Sync + 'static,
 {
-    let _ = (service, writer, json, directives);
-    todo!("LOG-3")
+    let trimmed = directives.trim();
+    let (filter, active) = if !trimmed.is_empty() {
+        match EnvFilter::try_new(trimmed) {
+            Ok(f) => (f, trimmed.to_owned()),
+            Err(_) => (EnvFilter::new("info"), "info".to_owned()),
+        }
+    } else {
+        (EnvFilter::new("info"), "info".to_owned())
+    };
+
+    let (filter_layer, inner) = reload::Layer::new(filter);
+    let fmt_layer = tracing_subscriber::fmt::layer()
+        .with_writer(writer)
+        .event_format(EventFormatter {
+            service: service.to_owned(),
+            json,
+        });
+
+    let subscriber = Registry::default()
+        .with(filter_layer)
+        .with(SpanFieldsLayer)
+        .with(fmt_layer);
+
+    let handle = LogHandle {
+        inner,
+        current: Arc::new(RwLock::new(active)),
+    };
+
+    (Dispatch::new(subscriber), handle)
 }
 
 #[cfg(test)]
