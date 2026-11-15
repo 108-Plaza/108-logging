@@ -45,8 +45,8 @@ classDiagram
   - The initial directives use the same precedence as today: `RUST_LOG` → `LOG_FILTER` → `info`.
   - Calling it a second time does not install a second subscriber. It returns a handle that controls nothing, and `set_filter` on that handle returns `FilterError::Reload`.
 - `build_reloadable_subscriber(...)` is the testable form. It returns the subscriber and the handle, and installs nothing globally.
-- `LogHandle::set_filter(directives)` parses the string as `EnvFilter` directives (`warn,mqtt=debug`). If it parses, it swaps the filter and records the string. If it does not parse, it returns `FilterError::Parse` and **leaves the old filter and string untouched**.
-- `LogHandle::filter()` returns the directive string currently in force.
+- `LogHandle::set_filter(directives)` parses the string as `EnvFilter` directives (`warn,mqtt=debug`). If it parses, it swaps the filter, and only after the swap succeeds does it record the string. If the swap fails (the subscriber is gone, as on the handle from a second `init_reloadable`), it returns `FilterError::Reload` and records nothing. If it does not parse, it returns `FilterError::Parse` and **leaves the old filter and string untouched**.
+- `LogHandle::filter()` returns the directive string currently in force. At boot, that is the string that actually parsed: if `RUST_LOG` does not parse and the filter falls back, it reports the fallback (`info`), not the raw env value. On a handle that controls nothing, it reports the directives that handle was built with, which are not in force.
 - `init` and `init_with` stay as they are (no reload layer), so existing callers do not change.
 
 ### Subsystem = target
@@ -55,7 +55,7 @@ A subsystem is a `tracing` target, written as `target: "mqtt"` on the event. Per
 
 ### Cost when off
 
-`reload::Layer` adds one `RwLock` read per callsite-interest check. `tracing` caches interest, and a reload calls `rebuild_interest_cache`. An event below the filter therefore still costs only the level check: no formatting and no allocation.
+`reload::Layer` takes one `RwLock` read for each layer callback it forwards (`register_callsite`, `enabled`, `on_event`, span callbacks). `tracing` caches interest per callsite, and `reload::Handle::reload` calls `rebuild_interest_cache`, so a callsite that was off turns on after a reload and turns off again after the next one (checked with a prototype on the same callsite, 2026-11-15). A plain level directive caches a disabled callsite as `never`, so an event below the filter costs only the cached check: no lock, no formatting and no allocation. Span or field directives (`[span]`, `{field}`) make interest `sometimes`, and those callsites take the lock on every event.
 
 ## Behaviour
 
@@ -66,17 +66,19 @@ A subsystem is a `tracing` target, written as `target: "mqtt"` on the event. Per
 | Same, then `debug!(target: "http", …)` | not written |
 | `set_filter("warn,mqtt=nonsense[")` | `Err(Parse)`, `filter()` still `"warn,mqtt=debug"`, the mqtt debug line is still written |
 | `filter()` right after build with `"warn"` | `"warn"` |
+| Subscriber dropped, then `set_filter("debug")` | `Err(Reload)`, `filter()` still the old string |
 | Redaction, JSON schema, `request_id` | unchanged; the existing tests stay green |
 
 ## Provided tests (written before the code, `crates/log108/src/reload.rs` `#[cfg(test)]`)
 
-1. `reload_raises_one_target_without_restart`: rows 1–3 of the table.
+1. `reload_raises_one_target_without_restart`: rows 1–3 of the table. Emit rows 1 and 2 from the **same** callsite (one helper fn), so the test proves the interest cache is rebuilt.
 2. `bad_directive_keeps_the_old_filter`: row 4.
 3. `filter_reports_the_directives_in_force`: row 5.
+4. `set_filter_after_the_subscriber_is_gone_is_a_reload_error`: row 6. Build with `build_reloadable_subscriber`, drop the subscriber, then call `set_filter`.
 
 Each test uses `tracing::subscriber::with_default` and an in-memory writer, as the existing tests in `lib.rs` do. None of them installs a global subscriber.
 
 ## Consumers
 
-- bank-bot#996 drops its own `tracing-subscriber` init and reload code. It calls `log108::init_reloadable("bank-bot")`, keeps the `GET`/`PUT /admin/log` route (loopback or `screenlink.allow_ip`) calling `LogHandle`, and reads its boot default from `log.filter` (cloud: `warn`).
+- bank-bot#996 drops its own `tracing-subscriber` init and reload code. It calls `log108::init_reloadable(log108::Options::new("bank-bot"))`, keeps the `GET`/`PUT /admin/log` route (loopback or `screenlink.allow_ip`) calling `LogHandle`, and reads its boot default from `log.filter` (cloud: `warn`).
 - ScreenLink#357 (ESP32 firmware) cannot use this host crate. It shares only the target and event names and the field names.
