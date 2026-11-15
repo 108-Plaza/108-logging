@@ -74,6 +74,9 @@ impl LogHandle {
 /// Like [`crate::init_with`], but with a reloadable filter. Returns the handle.
 ///
 /// Initial directives use the same precedence as today: `RUST_LOG` → `LOG_FILTER` → `info`.
+/// Records from the `log` crate are bridged into the subscriber via [`tracing_log::LogTracer`]
+/// (if another `log` logger is already installed, bridging is skipped and the live handle is
+/// still returned).
 /// If a global subscriber is already installed, nothing new is installed and the returned
 /// handle controls nothing: its `set_filter` returns [`FilterError::Reload`].
 pub fn init_reloadable<W, S>(options: Options<W, S>) -> LogHandle
@@ -97,7 +100,9 @@ where
 
     let (dispatch, handle) =
         build_reloadable_subscriber(options.service.as_ref(), options.writer, json, &directives);
-    let _ = tracing::dispatcher::set_global_default(dispatch);
+    if tracing::dispatcher::set_global_default(dispatch).is_ok() {
+        let _ = tracing_log::LogTracer::init();
+    }
     handle
 }
 
