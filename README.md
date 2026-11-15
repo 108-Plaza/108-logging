@@ -44,6 +44,17 @@ log108::init_with(log108::Options {
 - `RUST_LOG` or `LOG_FILTER`: filter directives (precedence: `RUST_LOG` -> `LOG_FILTER` -> `info`).
 - `LOG_FORMAT`: `json` or `pretty`. When unset, `log108::init` defaults to `json` when stdout is not a tty and `pretty` on a dev tty. When set, `LOG_FORMAT` overrides `Options { json }`.
 
+### Runtime filter
+
+Use `log108::init_reloadable` to obtain a cloneable `LogHandle` that can change filter directives on a running process without a restart. A subsystem is a `tracing` target (e.g. `target: "mqtt"`), so per-subsystem levels use standard directives such as `warn,mqtt=debug`:
+
+```rust
+let handle = log108::init_reloadable(log108::Options::new("bank-bot"));
+assert_eq!(handle.filter(), "info");
+
+handle.set_filter("warn,mqtt=debug")?;
+```
+
 ### Redaction
 
 Do not log tokens, secrets, slip images, OCR text, or personal data.
