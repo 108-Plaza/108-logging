@@ -33,6 +33,7 @@ pub const REDACTED_FIELDS: &[&str] = &[
     "credentials",
     "session",
     "session_id",
+    "session_key",
     "signature",
     "passphrase",
     "hmac",
@@ -45,6 +46,8 @@ pub const REDACTED_FIELDS: &[&str] = &[
     "bearer",
     "otp",
     "otp_code",
+    "otpcode",
+    "userotp",
     "pin",
     "cvv",
     "cvc",
@@ -100,7 +103,6 @@ const SUBSTRING_MARKERS: &[&str] = &[
     "access_key",
     "secret_key",
     "credential",
-    "session",
     "signature",
     "hmac",
     "authorization",
@@ -129,6 +131,10 @@ const SUBSTRING_MARKERS: &[&str] = &[
 const SEGMENT_MARKERS: &[&str] = &[
     "pass", "pwd", "auth", "jwt", "bearer", "otp", "pin", "cvv", "cvc", "ssn", "phone", "mobile",
     "email", "address", "dob",
+];
+
+const SESSION_EXEMPT_SUFFIXES: &[&str] = &[
+    "count", "total", "num", "number", "len", "size", "max", "min", "limit",
 ];
 
 /// Returns `true` if `field_name` matches a known dangerous field name (tokens, secrets,
@@ -170,10 +176,23 @@ pub fn is_sensitive_field(field_name: &str) -> bool {
         return true;
     }
 
-    normalized
+    let segments: Vec<&str> = normalized
         .split('_')
         .filter(|seg| !seg.is_empty())
-        .any(|seg| SEGMENT_MARKERS.contains(&seg))
+        .collect();
+
+    if segments.iter().any(|&seg| {
+        SEGMENT_MARKERS.contains(&seg) || seg.starts_with("otp") || seg.ends_with("otp")
+    }) {
+        return true;
+    }
+
+    segments
+        .iter()
+        .any(|&seg| seg == "session" || seg == "sessionid")
+        && !segments
+            .last()
+            .is_some_and(|last| SESSION_EXEMPT_SUFFIXES.contains(last))
 }
 
 /// Returns [`REDACTED`] if `field_name` is a known dangerous field name, or `value` unchanged.

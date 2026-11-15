@@ -425,10 +425,7 @@ where
             for (k, v) in span_fields.into_iter().chain(event_fields) {
                 if !is_reserved_key(&k) {
                     match v {
-                        Value::String(s) if s.chars().any(char::is_control) => {
-                            write!(writer, " {k}={s:?}")?
-                        }
-                        Value::String(s) => write!(writer, " {k}={s}")?,
+                        Value::String(s) => write!(writer, " {k}={s:?}")?,
                         other => write!(writer, " {k}={other}")?,
                     }
                 }
@@ -637,7 +634,12 @@ mod tests {
             "set_cookie",
             "set-cookie",
             "otp",
+            "OTP",
             "otp_code",
+            "otp_value",
+            "otpcode",
+            "userotp",
+            "OTPCode",
             "pin",
             "pin_code",
             "slip",
@@ -707,6 +709,7 @@ mod tests {
             "message",
             "order_id",
             "footprint",
+            "session_count",
         ] {
             assert!(
                 !is_sensitive_field(safe),
@@ -902,6 +905,190 @@ mod tests {
             );
         }
         assert_eq!(parsed["user_id"], "u_99");
+    }
+
+    #[test]
+    fn redacts_lowercase_otp_concatenations_and_preserves_existing_otp_names() {
+        for otp_field in [
+            "otp",
+            "OTP",
+            "otp_code",
+            "otp_value",
+            "otpCode",
+            "OTPCode",
+            "otpcode",
+            "userotp",
+        ] {
+            assert!(
+                is_sensitive_field(otp_field),
+                "expected {otp_field} to be classified as sensitive"
+            );
+            assert_eq!(redact_field(otp_field, "123456"), REDACTED);
+        }
+        assert!(!is_sensitive_field("footprint"));
+
+        let buf = BufferWriter::default();
+        let sub =
+            build_subscriber_with_filter("otp-svc", buf.clone(), true, EnvFilter::new("info"));
+        tracing::subscriber::with_default(sub, || {
+            tracing::info!(
+                otp = "111111",
+                otp_code = "222222",
+                otpCode = "333333",
+                OTPCode = "444444",
+                otpcode = "555555",
+                userotp = "666666",
+                otp_value = "777777",
+                "verified otp"
+            );
+        });
+
+        let line = buf.take_string();
+        for secret in [
+            "111111", "222222", "333333", "444444", "555555", "666666", "777777",
+        ] {
+            assert!(
+                !line.contains(secret),
+                "expected {secret} to be masked in {line}"
+            );
+        }
+        let parsed: Value = serde_json::from_str(line.trim()).expect("valid JSON");
+        for key in [
+            "otp",
+            "otp_code",
+            "otpCode",
+            "OTPCode",
+            "otpcode",
+            "userotp",
+            "otp_value",
+        ] {
+            assert_eq!(parsed[key], REDACTED, "expected {key} to be [REDACTED]");
+        }
+    }
+
+    #[test]
+    fn session_matching_masks_credentials_but_not_session_count() {
+        for sensitive in [
+            "session",
+            "session_id",
+            "sessionId",
+            "x-session-id",
+            "X-Session-Id",
+            "sessionid",
+            "user_session",
+            "user_session_id",
+            "current_session_id",
+            "login_session",
+            "refresh_session",
+            "session_token",
+        ] {
+            assert!(
+                is_sensitive_field(sensitive),
+                "expected {sensitive} to be sensitive"
+            );
+            assert_eq!(redact_field(sensitive, "secret-sess"), REDACTED);
+        }
+        for non_sensitive in [
+            "session_count",
+            "sessionCount",
+            "active_sessions",
+            "session_total",
+        ] {
+            assert!(
+                !is_sensitive_field(non_sensitive),
+                "expected {non_sensitive} NOT to be sensitive"
+            );
+            assert_eq!(redact_field(non_sensitive, "5"), "5");
+        }
+
+        let buf = BufferWriter::default();
+        let sub =
+            build_subscriber_with_filter("sess-svc", buf.clone(), true, EnvFilter::new("info"));
+        tracing::subscriber::with_default(sub, || {
+            tracing::info!(
+                session = "s_raw",
+                session_id = "sid_raw",
+                sessionId = "sid_camel",
+                sessionid = "sid_flat",
+                user_session = "u_sess",
+                user_session_id = "u_sid",
+                current_session_id = "cur_sid",
+                login_session = "login_sess",
+                refresh_session = "ref_sess",
+                session_count = 5u64,
+                sessionCount = 6u64,
+                active_sessions = 7u64,
+                session_total = 8u64,
+                "session check"
+            );
+        });
+
+        let parsed: Value = serde_json::from_str(buf.take_string().trim()).expect("valid JSON");
+        for masked_key in [
+            "session",
+            "session_id",
+            "sessionId",
+            "sessionid",
+            "user_session",
+            "user_session_id",
+            "current_session_id",
+            "login_session",
+            "refresh_session",
+        ] {
+            assert_eq!(
+                parsed[masked_key], REDACTED,
+                "expected {masked_key} to be [REDACTED]"
+            );
+        }
+        assert_eq!(parsed["session_count"], 5);
+        assert_eq!(parsed["sessionCount"], 6);
+        assert_eq!(parsed["active_sessions"], 7);
+        assert_eq!(parsed["session_total"], 8);
+    }
+
+    #[test]
+    fn pretty_mode_escapes_field_values_and_prevents_newline_injection() {
+        let buf = BufferWriter::default();
+        let sub =
+            build_subscriber_with_filter("pretty-svc", buf.clone(), false, EnvFilter::new("info"));
+        tracing::subscriber::with_default(sub, || {
+            let span = tracing::info_span!("req", note = "hello world", session_id = "sess-secret");
+            let _enter = span.enter();
+            tracing::info!(
+                injected = "line1\n2026-11-13T00:00:00Z ERROR [fake] forged",
+                otpcode = "987654",
+                count = 3u64,
+                "pretty event"
+            );
+        });
+
+        let output = buf.take_string();
+        let lines: Vec<&str> = output.lines().collect();
+        assert_eq!(
+            lines.len(),
+            1,
+            "newline in field value must not start a second log line, got: {output:?}"
+        );
+        let line = lines[0];
+        assert!(
+            line.contains(r#"note="hello world""#),
+            "expected escaped string field, got: {line}"
+        );
+        assert!(
+            line.contains(r#"injected="line1\n2026-11-13T00:00:00Z ERROR [fake] forged""#),
+            "expected newline to be escaped in field value, got: {line}"
+        );
+        assert!(
+            line.contains(r#"session_id="[REDACTED]""#),
+            "expected redacted span field to appear as [REDACTED], got: {line}"
+        );
+        assert!(
+            line.contains(r#"otpcode="[REDACTED]""#),
+            "expected redacted event field to appear as [REDACTED], got: {line}"
+        );
+        assert!(!line.contains("sess-secret"));
+        assert!(!line.contains("987654"));
+        assert!(line.contains("count=3"));
     }
 
     #[cfg(feature = "axum")]
