@@ -968,17 +968,37 @@ mod tests {
 
     #[test]
     fn session_matching_masks_credentials_but_not_session_count() {
-        for sensitive in ["session", "session_id", "sessionId", "session_token"] {
+        for sensitive in [
+            "session",
+            "session_id",
+            "sessionId",
+            "x-session-id",
+            "X-Session-Id",
+            "sessionid",
+            "user_session",
+            "user_session_id",
+            "current_session_id",
+            "login_session",
+            "refresh_session",
+            "session_token",
+        ] {
             assert!(
                 is_sensitive_field(sensitive),
                 "expected {sensitive} to be sensitive"
             );
+            assert_eq!(redact_field(sensitive, "secret-sess"), REDACTED);
         }
-        for non_sensitive in ["session_count", "sessionCount", "active_sessions"] {
+        for non_sensitive in [
+            "session_count",
+            "sessionCount",
+            "active_sessions",
+            "session_total",
+        ] {
             assert!(
                 !is_sensitive_field(non_sensitive),
                 "expected {non_sensitive} NOT to be sensitive"
             );
+            assert_eq!(redact_field(non_sensitive, "5"), "5");
         }
 
         let buf = BufferWriter::default();
@@ -989,16 +1009,41 @@ mod tests {
                 session = "s_raw",
                 session_id = "sid_raw",
                 sessionId = "sid_camel",
+                sessionid = "sid_flat",
+                user_session = "u_sess",
+                user_session_id = "u_sid",
+                current_session_id = "cur_sid",
+                login_session = "login_sess",
+                refresh_session = "ref_sess",
                 session_count = 5u64,
+                sessionCount = 6u64,
+                active_sessions = 7u64,
+                session_total = 8u64,
                 "session check"
             );
         });
 
         let parsed: Value = serde_json::from_str(buf.take_string().trim()).expect("valid JSON");
-        assert_eq!(parsed["session"], REDACTED);
-        assert_eq!(parsed["session_id"], REDACTED);
-        assert_eq!(parsed["sessionId"], REDACTED);
+        for masked_key in [
+            "session",
+            "session_id",
+            "sessionId",
+            "sessionid",
+            "user_session",
+            "user_session_id",
+            "current_session_id",
+            "login_session",
+            "refresh_session",
+        ] {
+            assert_eq!(
+                parsed[masked_key], REDACTED,
+                "expected {masked_key} to be [REDACTED]"
+            );
+        }
         assert_eq!(parsed["session_count"], 5);
+        assert_eq!(parsed["sessionCount"], 6);
+        assert_eq!(parsed["active_sessions"], 7);
+        assert_eq!(parsed["session_total"], 8);
     }
 
     #[test]
