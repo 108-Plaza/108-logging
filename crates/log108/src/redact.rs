@@ -115,7 +115,12 @@ const SUBSTRING_MARKERS: &[&str] = &[
     "passport",
     "bank_account",
     "account_number",
+    "account_no",
+    "accountno",
     "card_number",
+    "card_no",
+    "cardno",
+    "pairing_code",
     "promptpay",
     "birth_date",
     "date_of_birth",
@@ -129,8 +134,8 @@ const SUBSTRING_MARKERS: &[&str] = &[
 ];
 
 const SEGMENT_MARKERS: &[&str] = &[
-    "pass", "pwd", "auth", "jwt", "bearer", "otp", "pin", "cvv", "cvc", "ssn", "phone", "mobile",
-    "email", "address", "dob",
+    "pass", "pwd", "auth", "jwt", "bearer", "otp", "pin", "pincode", "passcode", "acct", "cvv",
+    "cvc", "ssn", "phone", "mobile", "email", "address", "dob",
 ];
 
 const SESSION_EXEMPT_SUFFIXES: &[&str] = &[
