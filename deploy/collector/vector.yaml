@@ -1,0 +1,42 @@
+# Managed by 108-Plaza/108-logging (collector). Ships this host's journald to VictoriaLogs.
+data_dir: /data/yuth/logging/vector-data
+api:
+  enabled: false
+sources:
+  journal:
+    type: journald
+    since_now: true
+transforms:
+  shape:
+    type: remap
+    inputs: [journal]
+    source: |
+      unit = .SYSTEMD_USER_UNIT || ._SYSTEMD_USER_UNIT || ._SYSTEMD_UNIT || .SYSLOG_IDENTIFIER || "unknown"
+      raw = to_string(.message) ?? ""
+      parsed, err = parse_json(raw)
+      out = {}
+      if err == null && is_object(parsed) {
+        out = object!(parsed)
+        if !exists(out.message) { out.message = raw }
+      } else {
+        out.message = raw
+      }
+      out.timestamp = .timestamp
+      out.host = .host
+      out.unit = unit
+      if !exists(out.service) { out.service = replace(to_string(unit) ?? "unknown", r'\.service$', "") }
+      if !exists(out.level) { out.level = .PRIORITY }
+      . = out
+sinks:
+  vlogs:
+    type: elasticsearch
+    inputs: [shape]
+    endpoints: ["http://127.0.0.1:9428/insert/elasticsearch/"]
+    mode: bulk
+    api_version: v8
+    healthcheck:
+      enabled: false
+    query:
+      _msg_field: message
+      _time_field: timestamp
+      _stream_fields: host,service

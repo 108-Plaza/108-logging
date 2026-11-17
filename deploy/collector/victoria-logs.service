@@ -1,0 +1,12 @@
+[Unit]
+Description=VictoriaLogs (108-logging central collector)
+After=network-online.target
+
+[Service]
+ExecStart=/data/yuth/logging/bin/victoria-logs -storageDataPath=/data/yuth/logging/vlogs-data -retentionPeriod=30d -retention.maxDiskSpaceUsageBytes=200GiB -httpListenAddr=127.0.0.1:9428
+Restart=always
+RestartSec=5
+LimitNOFILE=65536
+
+[Install]
+WantedBy=default.target

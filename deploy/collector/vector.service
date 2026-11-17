@@ -1,0 +1,12 @@
+[Unit]
+Description=Vector log shipper (108-logging) -> VictoriaLogs
+After=victoria-logs.service
+Wants=victoria-logs.service
+
+[Service]
+ExecStart=/data/yuth/logging/bin/vector --config /data/yuth/logging/etc/vector.yaml
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
