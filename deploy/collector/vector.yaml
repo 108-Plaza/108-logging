@@ -12,6 +12,9 @@ transforms:
     inputs: [journal]
     source: |
       unit = .SYSTEMD_USER_UNIT || ._SYSTEMD_USER_UNIT || ._SYSTEMD_UNIT || .SYSLOG_IDENTIFIER || "unknown"
+      # A command run from an ssh login lands in session-<n>.scope; name it by its syslog tag instead,
+      # so ad-hoc scripts do not open a new stream per login.
+      if starts_with(to_string(unit) ?? "", "session-") && exists(.SYSLOG_IDENTIFIER) { unit = .SYSLOG_IDENTIFIER }
       raw = to_string(.message) ?? ""
       parsed, err = parse_json(raw)
       out = {}
@@ -25,7 +28,19 @@ transforms:
       out.host = .host
       out.unit = unit
       if !exists(out.service) { out.service = replace(to_string(unit) ?? "unknown", r'\.service$', "") }
-      if !exists(out.level) { out.level = .PRIORITY }
+      # One level vocabulary, the log108 one: error | warn | info | debug | trace.
+      # Non-JSON lines only carry journald PRIORITY (0-7); keep it as `priority`.
+      out.priority = .PRIORITY
+      if !exists(out.level) {
+        p = to_int(.PRIORITY) ?? 6
+        out.level = if p <= 3 { "error" } else if p == 4 { "warn" } else if p <= 6 { "info" } else { "debug" }
+      } else {
+        lv = downcase(to_string(out.level) ?? "")
+        if lv == "warning" { lv = "warn" }
+        if lv == "err" || lv == "critical" || lv == "crit" || lv == "fatal" || lv == "emerg" || lv == "alert" { lv = "error" }
+        if lv == "notice" { lv = "info" }
+        out.level = lv
+      }
       . = out
 sinks:
   vlogs:
